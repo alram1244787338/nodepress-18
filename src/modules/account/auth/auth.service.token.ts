@@ -39,13 +39,20 @@ export class UserAuthTokenService {
     }
   }
 
-  public async refreshToken(refreshToken: string): Promise<AuthTokenResult> {
-    const payload = await this.refreshTokenService.getPayload(refreshToken)
+  public async refreshToken(
+    refreshToken: string,
+    currentAccessToken: string
+  ): Promise<AuthTokenResult> {
+    // Atomic consume: GETDEL in a single Redis operation.
+    // Prevents race conditions where concurrent refresh requests both succeed.
+    const payload = await this.refreshTokenService.consumeToken(refreshToken)
     if (!payload || payload.role !== AuthRole.User || !payload.uid) {
       throw new UnauthorizedException('Invalid or expired refresh token')
     }
 
-    await this.refreshTokenService.revokeToken(refreshToken)
+    // Blacklist the old access token to prevent continued use after refresh
+    await this.accessTokenService.invalidateToken(currentAccessToken)
+
     return await this.createToken(payload.uid)
   }
 

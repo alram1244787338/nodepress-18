@@ -66,8 +66,10 @@ export class AdminController {
   @Throttle({ default: { ttl: hours(1), limit: 10 } })
   @Post('refresh-token')
   @SuccessResponse('Refresh token succeeded')
-  refreshToken(@Body() { refresh_token }: AuthRefreshTokenDto): Promise<AuthTokenResult> {
-    return this.adminAuthService.refreshToken(refresh_token)
+  refreshToken(
+    @Body() { refresh_token, access_token }: AuthRefreshTokenDto
+  ): Promise<AuthTokenResult> {
+    return this.adminAuthService.refreshToken(refresh_token, access_token)
   }
 
   @Post('verify-token')

@@ -170,7 +170,9 @@ export class AccountAuthController {
   @Post('refresh-token')
   @Throttle({ default: { ttl: hours(1), limit: 10 } })
   @SuccessResponse('Refresh token succeeded')
-  async refreshToken(@Body() { refresh_token }: AuthRefreshTokenDto): Promise<AuthTokenResult> {
-    return await this.authTokenService.refreshToken(refresh_token)
+  async refreshToken(
+    @Body() { refresh_token, access_token }: AuthRefreshTokenDto
+  ): Promise<AuthTokenResult> {
+    return await this.authTokenService.refreshToken(refresh_token, access_token)
   }
 }

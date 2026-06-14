@@ -26,6 +26,10 @@ export class AuthRefreshTokenDto {
   @IsString()
   @IsNotEmpty()
   refresh_token: string
+
+  @IsString()
+  @IsNotEmpty()
+  access_token: string
 }
 
 export class UpdateProfileDto {

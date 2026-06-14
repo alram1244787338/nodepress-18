@@ -33,4 +33,15 @@ export class AuthRefreshTokenService {
     const payload = await this.cacheService.get<AuthPayload>(key)
     return payload ?? null
   }
+
+  /**
+   * Atomically read and delete the refresh token payload.
+   * Returns null if the token does not exist (already consumed or never created).
+   * Prevents race conditions where concurrent refresh requests could both succeed.
+   */
+  public async consumeToken(token: string): Promise<AuthPayload | null> {
+    const key = getRefreshTokenCacheKey(token)
+    const payload = await this.cacheService.getAndDelete<AuthPayload>(key)
+    return payload ?? null
+  }
 }

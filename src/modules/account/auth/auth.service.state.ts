@@ -41,12 +41,14 @@ export class UserAuthStateService {
     }
 
     const stateKey = getUserAuthStateCacheKey(state)
-    const statePayload = await this.cacheService.get<AuthStatePayload>(stateKey)
+    // Atomic GETDEL: prevents concurrent OAuth callbacks from both succeeding with the same state.
+    // The same error message is used for both expired and consumed states to avoid leaking
+    // whether the state was already used or simply timed out.
+    const statePayload = await this.cacheService.getAndDelete<AuthStatePayload>(stateKey)
     if (!statePayload) {
       throw new BadRequestException('Invalid or expired authorization state. Please try logging in again.')
     }
 
-    await this.cacheService.delete(stateKey)
     return statePayload
   }
 }

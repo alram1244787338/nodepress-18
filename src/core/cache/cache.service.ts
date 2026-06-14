@@ -63,6 +63,15 @@ export class CacheService {
     return this.redisService.store.delete(key)
   }
 
+  /**
+   * Atomically get and delete a key in a single operation.
+   * Returns undefined if the key does not exist.
+   * Uses Redis GETDEL to prevent race conditions on concurrent read-then-delete.
+   */
+  public getAndDelete<T>(key: string): Promise<T | undefined> {
+    return this.redisService.store.getAndDelete<T>(key)
+  }
+
   /** Execute the Promise and store the data into the cache. */
   private async execPromise<T>(options: CacheBaseOptions<T>): Promise<T> {
     const data = await options.promise()

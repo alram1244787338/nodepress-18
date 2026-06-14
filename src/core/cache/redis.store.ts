@@ -83,6 +83,14 @@ export const createRedisStore = (redisClient: RedisClientType, options?: RedisSt
     return deleted > 0
   }
 
+  // https://redis.io/commands/getdel/
+  // Atomically get and delete a key in a single round-trip (requires Redis >= 6.2).
+  // Prevents race conditions where concurrent read-then-delete could both succeed.
+  const getAndDelete = async <T>(key: string): Promise<T | undefined> => {
+    const value = await redisClient.getDel(getKeyName(key))
+    return parseValue<T>(value)
+  }
+
   const has = async (key: string) => {
     const count = await redisClient.exists(getKeyName(key))
     return count !== 0
@@ -100,6 +108,7 @@ export const createRedisStore = (redisClient: RedisClientType, options?: RedisSt
     get,
     set,
     delete: del,
+    getAndDelete,
     mset,
     mget,
     mdel,

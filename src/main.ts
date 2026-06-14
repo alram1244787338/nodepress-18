@@ -16,6 +16,7 @@ import { HttpExceptionFilter } from '@app/filters/exception.filter'
 import { Identity, IdentityRole } from '@app/constants/identity.constant'
 import { AuthRole } from '@app/constants/auth.constant'
 import { AuthAccessTokenService } from '@app/core/auth/auth.service.access-token'
+import { TokenVerificationException } from '@app/core/auth/auth.errors'
 import { environment, isDevEnv } from './app.environment'
 import { AppModule } from './app.module'
 import { APP_BIZ } from './app.config'
@@ -49,9 +50,9 @@ async function bootstrap() {
     if (!token) return
 
     try {
-      // Verify the token. If an identity is declared, it MUST be valid (Explicit Failure policy)
+      // Verify the token. If an identity is declared, it MUST be valid (Explicit Failure policy).
+      // verifyToken now throws TokenVerificationException with a specific error code on failure.
       const payload = await authAccessTokenService.verifyToken(token)
-      if (!payload) throw new UnauthorizedException('Access denied: invalid identity payload')
       // Map AuthRole to IdentityRole based on token payload
       if (payload.role === AuthRole.Admin) {
         request.identity = new Identity({ role: IdentityRole.Admin, token, payload })
@@ -59,11 +60,15 @@ async function bootstrap() {
         request.identity = new Identity({ role: IdentityRole.User, token, payload })
       }
     } catch (error) {
-      // Fail explicitly if the token is invalid (expired, forged, or tampered)
-      // This prevents confusion and enhances security for authenticated users
+      // TokenVerificationException carries specific error codes (revoked/expired/malformed)
+      // with descriptive messages; rethrow directly as 401 Unauthorized.
+      if (error instanceof TokenVerificationException) {
+        throw error
+      }
+      // Fallback for any unexpected error during verification
       throw error instanceof UnauthorizedException
         ? error
-        : new UnauthorizedException('Authentication failed: token expired or malformed', { cause: error })
+        : new UnauthorizedException('Access denied: authentication failed', { cause: error })
     }
   })
 
