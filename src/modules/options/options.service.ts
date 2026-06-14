@@ -78,6 +78,10 @@ export class OptionsService implements OnModuleInit {
         { returnDocument: 'after' }
       )
       .exec()
+    // Invalidate cache so subsequent reads reflect the updated options document
+    await this.optionsCache.update().catch((error) => {
+      logger.warn('appendToBlocklist: cache update failed, will self-heal on next read.', error)
+    })
     return updated!.blocklist
   }
 
@@ -90,6 +94,10 @@ export class OptionsService implements OnModuleInit {
         { returnDocument: 'after' }
       )
       .exec()
+    // Invalidate cache so subsequent reads reflect the updated options document
+    await this.optionsCache.update().catch((error) => {
+      logger.warn('removeFromBlocklist: cache update failed, will self-heal on next read.', error)
+    })
     return updated!.blocklist
   }
 }

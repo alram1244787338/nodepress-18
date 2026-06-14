@@ -43,4 +43,11 @@ export class ArticleSyncService {
       .updateOne({ id: articleId }, { $set: { 'stats.comments': commentCount } }, { timestamps: false })
       .exec()
   }
+
+  /** Set an article stats field to an absolute value — used after vote recalculation. */
+  public updateStatsField(articleId: number, field: keyof ArticleStats, value: number) {
+    return this.articleModel
+      .updateOne({ id: articleId }, { $set: { [`stats.${field}`]: value } }, { timestamps: false })
+      .exec()
+  }
 }

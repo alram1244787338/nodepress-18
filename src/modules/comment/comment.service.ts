@@ -6,7 +6,7 @@
 
 import type { QueryFilter } from 'mongoose'
 import { EventEmitter2 } from '@nestjs/event-emitter'
-import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common'
+import { Injectable, BadRequestException, NotFoundException, ForbiddenException, ConflictException } from '@nestjs/common'
 import { MongooseModel, MongooseId, WithId } from '@app/interfaces/mongoose.interface'
 import { PaginateResult, PaginateOptions } from '@app/utils/paginate'
 import { InjectModel } from '@app/transformers/model.transformer'
@@ -21,11 +21,14 @@ import { Comment, CommentDoc, CommentDocWith, NormalizedComment } from './commen
 import { CreateCommentDto, UpdateCommentDto } from './comment.dto'
 import { CommentBlocklistService } from './comment.service.blocklist'
 import { CommentAkismetService } from './comment.service.akismet'
-import { CommentEffectService } from './comment.service.effect'
+import { CommentEffectService, CommentTarget } from './comment.service.effect'
 import { createLogger } from '@app/utils/logger'
 import { isDevEnv } from '@app/app.environment'
 
 const logger = createLogger({ scope: 'CommentService', time: isDevEnv })
+
+// Window (ms) within which identical submissions from the same author are treated as duplicates.
+const DUPLICATE_WINDOW_MS = 60_000
 
 @Injectable()
 export class CommentService {
@@ -38,6 +41,19 @@ export class CommentService {
     private readonly effectService: CommentEffectService,
     @InjectModel(Comment) private readonly commentModel: MongooseModel<Comment>
   ) {}
+
+  /**
+   * Await target-effect sync but swallow errors so that the primary operation
+   * (create / update / delete) still succeeds. Comment counts are recalculated
+   * from scratch on every sync, so a missed sync self-heals on the next operation.
+   */
+  private async safeSyncTargetEffects(targets: CommentTarget[]): Promise<void> {
+    try {
+      await this.effectService.syncTargetEffects(targets)
+    } catch (error) {
+      logger.warn('safeSyncTargetEffects: effect sync failed, counts will self-heal on next operation.', error)
+    }
+  }
 
   // normalize input data
   public normalize(
@@ -73,8 +89,9 @@ export class CommentService {
     const created = await this.commentModel.create({ ...input, ip_location })
     // populate user data for response
     const populated = await created.populate<{ user: UserPublic | null }>('user', USER_PUBLIC_POPULATE_SELECT)
-    // effect: sync target (article / page) effects
-    this.effectService.syncTargetEffects([populated])
+    // effect: sync target (article / page) comment counts — awaited for consistency,
+    // but failure must not prevent the comment from being returned (count self-heals on next sync).
+    await this.safeSyncTargetEffects([populated])
     // event: dispatch created event (for emails, notifications, etc.)
     this.eventEmitter.emit(GlobalEventKey.CommentCreated, populated.toObject())
     return populated
@@ -88,16 +105,49 @@ export class CommentService {
         throw new BadRequestException(`Comment is disabled for article: ${input.target_id}`)
       }
     }
-    // 2. local blocklist & remote Akismet SPAM
+
+    // 2. duplicate submission guard — same author + same target + same content within DUPLICATE_WINDOW_MS
+    await this.assertNotDuplicate(input)
+
+    // 3. local blocklist & remote Akismet SPAM (run in parallel)
     const [isSpam] = await Promise.all([
       this.akismetService.checkSpam(this.akismetService.transformCommentToAkismet(input, referer)),
       this.blocklistService.validate(input)
     ])
     if (isSpam) {
-      throw new ForbiddenException('Comment blocked by Akismet SPAM.')
+      throw new ForbiddenException('Comment blocked by Akismet SPAM detection.')
     }
-    // 3. create in databse
+
+    // 4. create in database
     return this.create(input)
+  }
+
+  /**
+   * Check whether an identical comment was recently submitted by the same author
+   * to the same target. Prevents duplicate writes caused by retries or double-clicks.
+   */
+  private async assertNotDuplicate(input: NormalizedComment): Promise<void> {
+    const since = new Date(Date.now() - DUPLICATE_WINDOW_MS)
+    const filter: QueryFilter<Comment> = {
+      target_type: input.target_type,
+      target_id: input.target_id,
+      content: input.content,
+      created_at: { $gte: since }
+    }
+
+    // Match by user (logged-in) or by author_email (guest)
+    if (input.user) {
+      filter.user = input.user
+    } else if (input.author_email) {
+      filter.author_email = input.author_email
+    } else {
+      return // anonymous comments without email can't be reliably de-duplicated
+    }
+
+    const existing = await this.commentModel.findOne(filter).lean().exec()
+    if (existing) {
+      throw new ConflictException('Duplicate comment: an identical comment was recently submitted.')
+    }
   }
 
   public async getDetail(commentId: number): Promise<CommentDoc>
@@ -134,26 +184,29 @@ export class CommentService {
       .findOneAndUpdate({ id: commentId }, { $set: input }, { returnDocument: 'after' })
       .exec()
     if (!updated) throw new NotFoundException(`Comment '${commentId}' not found`)
-    this.effectService.syncTargetEffects([updated])
-    this.blocklistService.syncByStatus([updated], updated.status)
+    await this.safeSyncTargetEffects([updated])
+    await this.blocklistService.syncByStatus([updated], updated.status)
     return updated
   }
 
   public async delete(commentId: number): Promise<CommentDoc> {
     const deleted = await this.commentModel.findOneAndDelete({ id: commentId }).exec()
     if (!deleted) throw new NotFoundException(`Comment '${commentId}' not found`)
-    this.effectService.syncTargetEffects([deleted])
+    await this.safeSyncTargetEffects([deleted])
     return deleted
   }
 
   public async batchUpdateStatus(commentIds: number[], status: CommentStatus) {
+    // Fetch before update so we have full documents for aggregation targets
     const comments = await this.commentModel
       .find({ id: { $in: commentIds } })
       .lean()
       .exec()
     const result = await this.commentModel.updateMany({ id: { $in: commentIds } }, { $set: { status } }).exec()
-    this.blocklistService.syncByStatus(comments, status)
-    this.effectService.syncTargetEffects(comments)
+    // Apply new status to the fetched documents so effect sync uses post-update state
+    const updatedComments = comments.map((c) => ({ ...c, status }))
+    await this.blocklistService.syncByStatus(updatedComments, status)
+    await this.safeSyncTargetEffects(updatedComments)
     return result
   }
 
@@ -163,7 +216,7 @@ export class CommentService {
       .lean()
       .exec()
     const result = await this.commentModel.deleteMany({ id: { $in: commentIds } }).exec()
-    this.effectService.syncTargetEffects(targets)
+    await this.safeSyncTargetEffects(targets)
     return result
   }
 
@@ -184,5 +237,12 @@ export class CommentService {
     if (!updated) throw new NotFoundException(`Comment '${commentId}' not found`)
 
     return updated[field]
+  }
+
+  /** Set likes/dislikes to absolute values — used after vote recalculation (e.g. admin batch delete). */
+  public recalculateVotes(commentId: number, likes: number, dislikes: number) {
+    return this.commentModel
+      .updateOne({ id: commentId }, { $set: { likes, dislikes } }, { timestamps: false })
+      .exec()
   }
 }

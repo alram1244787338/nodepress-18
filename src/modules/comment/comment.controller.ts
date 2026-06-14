@@ -7,7 +7,7 @@
 import _isUndefined from 'lodash/isUndefined'
 import type { QueryFilter } from 'mongoose'
 import { Get, Post, Patch, Delete, Query, Body, Param, Controller, ParseIntPipe } from '@nestjs/common'
-import { BadRequestException } from '@nestjs/common'
+import { BadRequestException, ForbiddenException, ConflictException, HttpException } from '@nestjs/common'
 import { Throttle, seconds } from '@nestjs/throttler'
 import { EventEmitter2 } from '@nestjs/event-emitter'
 import { UserService } from '@app/modules/user/user.service'
@@ -25,6 +25,23 @@ import { CommentIdsStatusDto, ClaimCommentsDto } from './comment.dto'
 import { Comment, CommentWith } from './comment.model'
 import { CommentStatsService } from './comment.service.stats'
 import { CommentService } from './comment.service'
+import { createLogger } from '@app/utils/logger'
+import { isDevEnv } from '@app/app.environment'
+
+const logger = createLogger({ scope: 'CommentController', time: isDevEnv })
+
+// Error reason codes — machine-readable identifiers so the front-end can
+// distinguish between spam, blocklist, duplicate and system errors.
+export enum CommentCreateErrorReason {
+  ArticleNotCommentable = 'ARTICLE_NOT_COMMENTABLE',
+  AkismetSpam = 'AKISMET_SPAM',
+  BlocklistIp = 'BLOCKLIST_IP',
+  BlocklistEmail = 'BLOCKLIST_EMAIL',
+  BlocklistKeyword = 'BLOCKLIST_KEYWORD',
+  Duplicate = 'DUPLICATE_COMMENT',
+  AuthorInfoRequired = 'AUTHOR_INFO_REQUIRED',
+  SystemError = 'SYSTEM_ERROR'
+}
 
 @Controller('comments')
 export class CommentController {
@@ -53,14 +70,64 @@ export class CommentController {
       // Guest flow: enforce author info validation
       const guestComment = this.commentService.normalize(input, { visitor })
       if (!guestComment.author_name || !guestComment.author_email) {
-        throw new BadRequestException('Author name and email are required')
+        throw new BadRequestException({
+          message: 'Author name and email are required',
+          reason: CommentCreateErrorReason.AuthorInfoRequired
+        })
       }
 
       return await this.commentService.validateAndCreate(guestComment, visitor.referer ?? void 0)
     } catch (error) {
-      this.eventEmitter.emit(GlobalEventKey.CommentCreateFailed, { input, visitor, error })
-      throw error
+      // Enrich the error with a machine-readable reason code
+      const enrichedError = this.enrichCommentError(error)
+      this.eventEmitter.emit(GlobalEventKey.CommentCreateFailed, { input, visitor, error: enrichedError })
+      throw enrichedError
     }
+  }
+
+  /**
+   * Map internal exceptions to enriched errors with machine-readable reason codes,
+   * so the front-end can distinguish spam, blocklist, duplicate and system errors.
+   */
+  private enrichCommentError(error: unknown): HttpException {
+    if (!(error instanceof HttpException)) {
+      logger.error('Unexpected system error during comment creation:', error)
+      return new BadRequestException({
+        message: 'An unexpected system error occurred.',
+        reason: CommentCreateErrorReason.SystemError
+      })
+    }
+
+    // ConflictException → duplicate comment
+    if (error instanceof ConflictException) {
+      return new ConflictException({
+        message: error.message,
+        reason: CommentCreateErrorReason.Duplicate
+      })
+    }
+
+    // ForbiddenException → spam or blocklist
+    if (error instanceof ForbiddenException) {
+      const message = typeof error.message === 'string' ? error.message : ''
+      let reason = CommentCreateErrorReason.AkismetSpam
+      if (message.includes('IP')) reason = CommentCreateErrorReason.BlocklistIp
+      else if (message.includes('Email')) reason = CommentCreateErrorReason.BlocklistEmail
+      else if (message.includes('Keywords')) reason = CommentCreateErrorReason.BlocklistKeyword
+      else if (message.includes('Akismet')) reason = CommentCreateErrorReason.AkismetSpam
+
+      return new ForbiddenException({ message, reason })
+    }
+
+    // BadRequestException → article not commentable or author info missing
+    if (error instanceof BadRequestException) {
+      const message = typeof error.message === 'string' ? error.message : ''
+      const reason = message.includes('disabled')
+        ? CommentCreateErrorReason.ArticleNotCommentable
+        : CommentCreateErrorReason.AuthorInfoRequired
+      return new BadRequestException({ message, reason })
+    }
+
+    return error
   }
 
   @Get()

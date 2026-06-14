@@ -20,10 +20,14 @@ export class CounterService {
     return count ? Number(count) : 0
   }
 
+  // Atomic increment — safe under concurrent access (uses Redis INCR).
   public incrementGlobalCount = async (key: string) => {
-    const count = await this.getGlobalCount(key)
-    await this.cacheService.set(key, count + 1)
-    return count + 1
+    return this.cacheService.increment(key)
+  }
+
+  // Atomic decrement — used for rollback when a downstream operation fails.
+  public decrementGlobalCount = async (key: string) => {
+    return this.cacheService.decrement(key)
   }
 
   public resetGlobalCount = (key: string) => {

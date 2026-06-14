@@ -60,6 +60,7 @@ export class CommentEffectService {
       // logger.info(`Synced comment counts for ${articleIds.length} articles.`)
     } catch (error) {
       logger.warn('syncArticleCommentCounts failed!', error)
+      throw error
     }
   }
 }

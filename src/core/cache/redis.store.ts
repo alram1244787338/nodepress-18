@@ -91,6 +91,17 @@ export const createRedisStore = (redisClient: RedisClientType, options?: RedisSt
   const ttl = (key: string) => redisClient.ttl(getKeyName(key))
   const keys = (pattern = getKeyName('*')) => redisClient.keys(pattern)
 
+  // Atomic increment — uses Redis INCR so concurrent calls never lose counts.
+  // Compatible with JSON-encoded numeric values since INCR parses the raw string.
+  const increment = async (key: string): Promise<number> => {
+    return redisClient.incr(getKeyName(key))
+  }
+
+  // Atomic decrement — uses Redis DECR for the same reason.
+  const decrement = async (key: string): Promise<number> => {
+    return redisClient.decr(getKeyName(key))
+  }
+
   const clear = async () => {
     await redisClient.del(await keys())
   }
@@ -105,6 +116,8 @@ export const createRedisStore = (redisClient: RedisClientType, options?: RedisSt
     mdel,
     ttl,
     keys,
+    increment,
+    decrement,
     clear
   }
 }

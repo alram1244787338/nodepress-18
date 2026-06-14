@@ -63,6 +63,16 @@ export class CacheService {
     return this.redisService.store.delete(key)
   }
 
+  /** Atomically increment a numeric key. Returns the new value. */
+  public increment(key: string): Promise<number> {
+    return this.redisService.store.increment(key)
+  }
+
+  /** Atomically decrement a numeric key. Returns the new value. */
+  public decrement(key: string): Promise<number> {
+    return this.redisService.store.decrement(key)
+  }
+
   /** Execute the Promise and store the data into the cache. */
   private async execPromise<T>(options: CacheBaseOptions<T>): Promise<T> {
     const data = await options.promise()
